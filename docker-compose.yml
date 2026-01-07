@@ -1,0 +1,128 @@
+version: '3.8'
+
+services:
+  # MongoDB - Database
+  mongo:
+    image: mongo:7.0
+    container_name: v3-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis - Caching & Pub/Sub
+  redis:
+    image: redis:7.2
+    container_name: v3-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: redis-cli ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Centralized API - Core Backend
+  centralized-api:
+    build:
+      context: ./centralized_api
+      dockerfile: Dockerfile
+    container_name: v3-centralized-api
+    ports:
+      - "8000:8000"
+    environment:
+      MONGODB_URL: mongodb://root:example@mongo:27017
+      DATABASE_NAME: bot_rbac
+      REDIS_URL: redis://redis:6379
+      SECRET_KEY: ${SECRET_KEY:-your-secret-key-change-in-production}
+      DEBUG: ${DEBUG:-false}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./centralized_api:/app
+    command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: curl -f http://localhost:8000/api/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Telegram Bot - Independent Bot Service
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: v3-bot
+    ports:
+      - "8001:8001"
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      CENTRALIZED_API_URL: http://centralized-api:8000
+      CENTRALIZED_API_KEY: ${API_KEY:-shared-api-key}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      centralized-api:
+        condition: service_healthy
+    volumes:
+      - ./bot:/app
+    command: python main.py
+    restart: unless-stopped
+
+  # Web API - Independent Web Service
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: v3-web
+    ports:
+      - "8002:8002"
+    environment:
+      CENTRALIZED_API_URL: http://centralized-api:8000
+      CENTRALIZED_API_KEY: ${API_KEY:-shared-api-key}
+      JWT_SECRET: ${JWT_SECRET:-your-jwt-secret-change-in-production}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-3600}
+      DEBUG: ${DEBUG:-false}
+    depends_on:
+      centralized-api:
+        condition: service_healthy
+    volumes:
+      - ./web:/app
+    command: uvicorn app:app --host 0.0.0.0 --port 8002 --reload
+    healthcheck:
+      test: curl -f http://localhost:8002/api/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Nginx - Load Balancer (Optional)
+  # Uncomment to use Nginx as reverse proxy
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: v3-nginx
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - centralized-api
+  #     - web
+  #   command: nginx -g 'daemon off;'
+
+volumes:
+  mongo_data:
+
+networks:
+  default:
+    name: v3-network

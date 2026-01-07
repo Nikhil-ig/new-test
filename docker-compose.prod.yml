@@ -1,0 +1,326 @@
+version: '3.8'
+
+# Production Docker Compose Configuration
+# This setup uses environment variables for configuration
+# Create .env file with all required variables before running
+
+services:
+  # ============================================
+  # MongoDB - Document Database
+  # ============================================
+  mongo:
+    image: mongo:7.0
+    container_name: telegram-bot-mongo
+    restart: unless-stopped
+    
+    # Volumes
+    volumes:
+      - mongo_data:/data/db
+      - mongo_logs:/var/log/mongodb
+    
+    # Ports (only expose if needed, ideally on localhost only)
+    ports:
+      - "127.0.0.1:27017:27017"
+    
+    # Environment
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: telegram_bot
+    
+    # Health check
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 512M
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  # ============================================
+  # Redis - Cache & Session Store
+  # ============================================
+  redis:
+    image: redis:7.2-alpine
+    container_name: telegram-bot-redis
+    restart: unless-stopped
+    
+    # Command with password
+    command: >
+      redis-server 
+      --requirepass ${REDIS_PASSWORD}
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --appendonly yes
+    
+    # Volumes
+    volumes:
+      - redis_data:/data
+    
+    # Ports (only expose if needed, ideally on localhost only)
+    ports:
+      - "127.0.0.1:6379:6379"
+    
+    # Health check
+    healthcheck:
+      test: redis-cli --raw incr ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 512M
+        reservations:
+          cpus: '0.125'
+          memory: 256M
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+
+  # ============================================
+  # Centralized API Service
+  # ============================================
+  centralized-api:
+    build:
+      context: ./centralized_api
+      dockerfile: Dockerfile
+    container_name: telegram-bot-api
+    restart: unless-stopped
+    
+    # Depends on database services being healthy
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    # Ports (only expose to localhost in production, use reverse proxy)
+    ports:
+      - "127.0.0.1:8000:8000"
+    
+    # Environment variables
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      MONGODB_URL: ${MONGODB_URL}
+      REDIS_URL: ${REDIS_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      ENVIRONMENT: ${ENVIRONMENT}
+      DEBUG: ${DEBUG}
+      LOG_LEVEL: ${LOG_LEVEL}
+      PYTHONUNBUFFERED: 1
+    
+    # Volumes for logs
+    volumes:
+      - ./logs/api:/app/logs
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+
+  # ============================================
+  # Telegram Bot Service
+  # ============================================
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: telegram-bot-service
+    restart: unless-stopped
+    
+    # Depends on API being healthy
+    depends_on:
+      centralized-api:
+        condition: service_healthy
+    
+    # No ports needed for bot (polling)
+    # If using webhook, expose port 8443
+    # ports:
+    #   - "8443:8443"
+    
+    # Environment variables
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      CENTRALIZED_API_URL: ${CENTRALIZED_API_URL}
+      LOG_LEVEL: ${LOG_LEVEL}
+      PYTHONUNBUFFERED: 1
+      BOT_POLLING_TIMEOUT: ${BOT_POLLING_TIMEOUT}
+      BOT_REQUEST_TIMEOUT: ${BOT_REQUEST_TIMEOUT}
+      BOT_DROP_PENDING_UPDATES: ${BOT_DROP_PENDING_UPDATES}
+    
+    # Volumes for logs
+    volumes:
+      - ./logs/bot:/app/logs
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+
+  # ============================================
+  # Web Service (Dashboard & Web API)
+  # ============================================
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: telegram-bot-web
+    restart: unless-stopped
+    
+    # Depends on API being healthy
+    depends_on:
+      centralized-api:
+        condition: service_healthy
+    
+    # Ports (only expose to localhost, use reverse proxy)
+    ports:
+      - "127.0.0.1:8003:8003"
+    
+    # Environment variables
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      CENTRALIZED_API_URL: ${CENTRALIZED_API_URL}
+      SECRET_KEY: ${SECRET_KEY}
+      ENVIRONMENT: ${ENVIRONMENT}
+      DEBUG: ${DEBUG}
+      LOG_LEVEL: ${LOG_LEVEL}
+      PYTHONUNBUFFERED: 1
+    
+    # Volumes for logs
+    volumes:
+      - ./logs/web:/app/logs
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+
+  # ============================================
+  # Frontend (Optional - if using frontend)
+  # ============================================
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   container_name: telegram-bot-frontend
+  #   restart: unless-stopped
+  #   
+  #   depends_on:
+  #     - web
+  #   
+  #   ports:
+  #     - "127.0.0.1:3000:80"
+  #   
+  #   environment:
+  #     REACT_APP_API_URL: ${CENTRALIZED_API_URL}
+  #   
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: '0.25'
+  #         memory: 256M
+  #       reservations:
+  #         cpus: '0.125'
+  #         memory: 128M
+
+
+# ============================================
+# Networks
+# ============================================
+networks:
+  default:
+    name: telegram-bot-network
+
+
+# ============================================
+# Volumes for persistent data
+# ============================================
+volumes:
+  mongo_data:
+    driver: local
+  mongo_logs:
+    driver: local
+  redis_data:
+    driver: local

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bot Manager - Admin Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100%;
+            height: 100%;
+            background: #111827;
+            color: #f3f4f6;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        #root {
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="root"></div>
+    <script>
+        console.log('Inline script is running!');
+        document.body.innerHTML += '<div style="color: yellow; font-size: 32px; margin-top: 50px; text-align: center;">Inline script works!</div>';
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+</body>
+
+</html>
